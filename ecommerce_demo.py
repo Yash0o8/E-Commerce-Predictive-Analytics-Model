@@ -545,6 +545,12 @@ y_reg = orders["order_value"]
 # Sanitize regression features: remove infinities and fill missing values with column medians
 X_reg = X_reg.replace([np.inf, -np.inf], np.nan)
 X_reg = X_reg.fillna(X_reg.median())
+# Additional safety check: fill any remaining NaN with 0
+X_reg = X_reg.fillna(0)
+# Remove rows where y_reg has NaN
+valid_idx = ~y_reg.isna()
+X_reg = X_reg[valid_idx]
+y_reg = y_reg[valid_idx]
 
 Xr_train, Xr_test, yr_train, yr_test = train_test_split(X_reg, y_reg, test_size=0.2, random_state=42)
 scaler_reg = StandardScaler().fit(Xr_train)
@@ -603,6 +609,11 @@ clf_features = ["lifetime_value", "total_orders", "avg_order_value", "recency",
                 "total_spent", "avg_rating_given", "return_rate", "customer_age_days"]
 X_clf = customers_enhanced[clf_features].copy()
 y_clf = customers_enhanced["churned"]
+
+# Sanitize classification features: remove infinities and fill NaNs
+X_clf = X_clf.replace([np.inf, -np.inf], np.nan)
+X_clf = X_clf.fillna(X_clf.median())
+X_clf = X_clf.fillna(0)
 
 # If labels contain only one class, avoid stratify (train_test_split with stratify will fail)
 stratify_param = y_clf if y_clf.nunique() > 1 else None
