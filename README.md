@@ -251,27 +251,5 @@ The pipeline will attempt to apply a mapping automatically if you add this featu
 
 ---
 
-## CI / Automation suggestions (optional)
-
-- Add a GitHub Actions workflow to run the pipeline on push (Python 3.12), install requirements, and run smoke tests.
-- Optionally upload `ecom_ml_output/` artifacts to a release on successful runs.
-
-Example job steps:
-- checkout, setup-python@v4 (3.12), pip install -r requirements.txt, python -u ecommerce_demo.py --file data/example.csv
-
----
-
-## Troubleshooting
-
-- "No module named X": activate `.venv312` and run `pip install -r requirements.txt` inside it.
-- If the dashboard shows empty charts, confirm `ecom_ml_output/` contains `orders.csv` and `performance_dashboard.json`.
-- If mapping fails, try `python ecommerce_demo.py --file data\yourfile.csv` or create a mapping JSON.
-
----
-
-If you want, I can add:
-- an interactive column-mapping UI in the Streamlit dashboard (map once, save mapping), or
-- automatic mapping JSON loader and example mappings committed to `mappings/`, or
-- a GitHub Actions workflow to run and test the pipeline on push.
-
 Happy analyzing! 🚀
+
