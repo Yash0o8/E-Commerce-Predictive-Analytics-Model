@@ -189,18 +189,39 @@ col1, col2 = st.columns(2)
 with col1:
     if orders_filtered is not None and "category" in orders_filtered.columns and "order_value" in orders_filtered.columns:
         category_revenue = orders_filtered.groupby("category")["order_value"].sum().sort_values(ascending=False).head(10)
-        
-        fig = go.Figure(data=[
-            go.Bar(x=category_revenue.index, y=category_revenue.values, 
-                   marker=dict(color=category_revenue.values, colorscale="Viridis"))
-        ])
+
+        # Truncate long category names for axis but keep full names in hovertext
+        def truncate_label(s, max_len=40):
+            s = str(s)
+            return (s if len(s) <= max_len else s[:max_len-3] + "...")
+
+        labels_full = category_revenue.index.tolist()
+        labels = [truncate_label(l, max_len=40) for l in labels_full]
+        values = category_revenue.values.tolist()
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=values[::-1],
+            y=labels[::-1],
+            orientation='h',
+            marker=dict(color=values[::-1], colorscale="Viridis"),
+            hovertemplate="%{customdata}<br>Revenue: ₹%{x:,.0f}<extra></extra>",
+            customdata=labels_full[::-1]
+        ))
+
         fig.update_layout(
             title="💰 Top 10 Categories by Revenue",
-            xaxis_title="Category",
-            yaxis_title="Revenue (₹)",
-            height=400,
+            xaxis_title="Revenue (₹)",
+            yaxis_title="Category",
+            height=420,
+            margin=dict(l=280, r=40, t=80, b=60),
+            yaxis=dict(automargin=True),
             showlegend=False
         )
+
+        # Smaller y-axis tick font for long labels
+        fig.update_yaxes(tickfont=dict(size=11))
+
         st.plotly_chart(fig, use_container_width=True)
 
 # Orders by Day of Week
