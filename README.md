@@ -116,46 +116,162 @@ scaler = joblib.load('ecom_ml_output/scaler_regression.joblib')
 new_order_features = [[quantity, discount, price, rating, delay, hour, day, month, margin]]
 scaled_features = scaler.transform(new_order_features)
 predicted_value = model.predict(scaled_features)
-print(f"Predicted order value: ₹{predicted_value[0]:.2f}")
-```
+# E-Commerce ML Pipeline — Business Intelligence & Predictive Analytics
 
-### Get churn predictions:
+An end-to-end ML pipeline for e-commerce that trains sales and churn models, builds a product recommender, and generates business insights and a Streamlit dashboard.
 
-```python
-churn_model = joblib.load('ecom_ml_output/churn_classification_model.joblib')
-churn_scaler = joblib.load('ecom_ml_output/scaler_classification.joblib')
-
-# Predict churn probability
-customer_features = [[lifetime_value, total_orders, avg_order_value, recency, ...]]
-scaled = churn_scaler.transform(customer_features)
-churn_prob = churn_model.predict_proba(scaled)[0][1]
-print(f"Churn probability: {churn_prob:.2%}")
-```
-
-## 🎯 Action Items After Running
-
-1. **Review high_risk_customers.csv** - Launch retention campaigns
-2. **Check business_insights.json** - Implement recommended strategies
-3. **Monitor feature importance** - Understand what drives your business
-4. **Update models monthly** - Retrain with new data for accuracy
-5. **A/B test recommendations** - Validate pricing and discount strategies
-
-## 📞 Need Help?
-
-The script will output:
-- ✅ Model performance metrics
-- ✅ Business KPIs
-- ✅ Actionable insights with hints
-- ✅ Risk alerts
-- ✅ All saved files location
-
-## 🔄 Maintenance
-
-- **Weekly**: Review high-risk customers
-- **Monthly**: Retrain models with new data
-- **Quarterly**: Review feature importance changes
-- **Ongoing**: Implement and test recommended strategies
+This repository now supports:
+- Automatic detection of common dataset formats (Superstore-style orders or Amazon product/review exports)
+- A `--file` CLI option to explicitly pick any file in `data/`
+- Automatic synthesis of orders/customers for product/review-only files (for exploration)
+- A Streamlit dashboard (`dashboard.py`) that reads outputs from `ecom_ml_output/`
 
 ---
 
-**Happy analyzing! 🚀**
+## Quick Start
+
+1. Create and activate the Python 3.12 virtual environment (recommended):
+
+```powershell
+python -m venv .venv312
+& .\.venv312\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
+
+2. Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+3. Run the pipeline (auto-detects best file in `data/`):
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+python -u .\ecommerce_demo.py
+```
+
+Or explicitly run a file in `data/`:
+
+```powershell
+python -u .\ecommerce_demo.py --file data\my_supplier.csv
+```
+
+4. Start the dashboard (after pipeline finishes):
+
+```powershell
+streamlit run dashboard.py --server.port 8501
+# open http://localhost:8501
+```
+
+---
+
+## What this project produces
+
+All outputs are written to `ecom_ml_output/` and models to `models/`:
+
+- Models
+   - `sales_regression_model.joblib`
+   - `churn_classification_model.joblib`
+   - `recommendation_engine.joblib`
+- Data / artifacts
+   - `orders.csv`, `products.csv`, `customers_with_predictions.csv`
+   - `high_risk_customers.csv`
+   - `business_insights.json`, `performance_dashboard.json`
+   - `feature_importance_sales.csv`, `feature_importance_churn.csv`
+
+These are used by the Streamlit dashboard for KPIs and visualizations.
+
+---
+
+## Supported Input Types
+
+- Full order datasets (recommended): must contain at least `order_id`, `order_date`, `customer_id`, `product_id`, `quantity`, and `order_value` (or `base_price` + discount columns).
+- Product/review exports (e.g., Amazon): the pipeline will detect this format and synthesize orders/customers for exploratory analysis (one order per review, synthetic dates). Useful for demos — not production-grade.
+
+If your file uses unusual column names, use `--file` to point to it, or add a mapping JSON (see Advanced section) for repeatable runs.
+
+---
+
+## Important Notes & Caveats
+
+- Synthetic data: When the pipeline synthesizes orders/customers the churn and lifetime metrics are approximate. Use real order datasets for trustworthy business metrics.
+- Degenerate labels: If churn labels are mostly one class (e.g., 100% churn), accuracy can be misleading — check class counts and ROC-AUC.
+- Mapping: `map_columns()` handles many common synonyms (e.g., `discounted_price`, `actual_price`, `qty`, `units`, `user_id`). If mapping fails, provide a mapping JSON.
+
+---
+
+## Examples: Using the trained models
+
+Load the sales model and make a prediction:
+
+```python
+import joblib
+import numpy as np
+
+model = joblib.load('ecom_ml_output/sales_regression_model.joblib')
+scaler = joblib.load('models/sales_scaler.pkl')
+
+# Example feature vector: [quantity, discount_pct, base_price, rating, delivery_delay, hour_of_day, day_of_week, month, profit_margin]
+features = np.array([[1, 10.0, 1999.0, 4.2, 0, 14, 2, 11, 20.0]])
+scaled = scaler.transform(features)
+pred = model.predict(scaled)
+print(f"Predicted order value: ₹{pred[0]:.2f}")
+```
+
+Get churn probability for a customer:
+
+```python
+clf = joblib.load('ecom_ml_output/churn_classification_model.joblib')
+scaler_clf = joblib.load('models/churn_scaler.pkl')
+features = [[0.0, 5, 2000.0, 45]]  # example: [lifetime_value, total_orders, avg_order_value, recency]
+scaled = scaler_clf.transform(features)
+prob = clf.predict_proba(scaled)[0][1]
+print(f"Churn probability: {prob:.2%}")
+```
+
+---
+
+## Advanced: per-supplier mapping (recommended for many suppliers)
+
+Create a JSON file under `mappings/` named after the supplier (e.g. `mappings/my_supplier.json`) with keys mapping standard fields to possible source names. Example:
+
+```json
+{
+   "order_id": ["order_id","txn_id"],
+   "order_date": ["order_date","txn_date","date"],
+   "customer_id": ["customer_id","user_id","buyer_id"],
+   "product_id": ["product_id","sku"],
+   "quantity": ["quantity","qty","units"],
+   "order_value": ["order_value","amount","total","discounted_price"]
+}
+```
+
+The pipeline will attempt to apply a mapping automatically if you add this feature (ask me to enable mapping JSON auto-loader).
+
+---
+
+## CI / Automation suggestions (optional)
+
+- Add a GitHub Actions workflow to run the pipeline on push (Python 3.12), install requirements, and run smoke tests.
+- Optionally upload `ecom_ml_output/` artifacts to a release on successful runs.
+
+Example job steps:
+- checkout, setup-python@v4 (3.12), pip install -r requirements.txt, python -u ecommerce_demo.py --file data/example.csv
+
+---
+
+## Troubleshooting
+
+- "No module named X": activate `.venv312` and run `pip install -r requirements.txt` inside it.
+- If the dashboard shows empty charts, confirm `ecom_ml_output/` contains `orders.csv` and `performance_dashboard.json`.
+- If mapping fails, try `python ecommerce_demo.py --file data\yourfile.csv` or create a mapping JSON.
+
+---
+
+If you want, I can add:
+- an interactive column-mapping UI in the Streamlit dashboard (map once, save mapping), or
+- automatic mapping JSON loader and example mappings committed to `mappings/`, or
+- a GitHub Actions workflow to run and test the pipeline on push.
+
+Happy analyzing! 🚀
