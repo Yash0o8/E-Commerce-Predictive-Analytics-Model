@@ -4,6 +4,7 @@
 
 import numpy as np
 import pandas as pd
+import argparse
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -46,6 +47,77 @@ CUSTOMERS_SHEET = None  # Sheet name for customers, or None for first sheet
 REFERENCE_DATE = datetime(2024, 12, 1)  # ⬅️ CHANGE THIS to your reference date
 
 print(f"\n📊 Data Source: {'YOUR OWN DATA' if USE_YOUR_DATA else 'SYNTHETIC DATA'}")
+
+# ========== CLI / AUTO-DETECT: allow running on any file in `data/` without editing code
+def score_file_columns(cols):
+    cols_l = [c.lower() for c in cols]
+    score = 0
+    # Strong indicators for order file
+    for k in ["order_id", "order_date", "customer_id", "product_id", "quantity", "order_value"]:
+        if any(k in c for c in cols_l):
+            score += 2
+    # Product/review style indicators
+    for k in ["product_name", "actual_price", "discounted_price", "review_id", "user_id"]:
+        if any(k in c for c in cols_l):
+            score += 1
+    return score
+
+def find_best_file_in_data(data_folder):
+    # Return basename (not full path) of best matching file or None
+    candidates = []
+    for fn in os.listdir(data_folder):
+        fn_l = fn.lower()
+        if fn_l.endswith('.csv') or fn_l.endswith('.xlsx') or fn_l.endswith('.xls'):
+            path = os.path.join(data_folder, fn)
+            try:
+                if fn_l.endswith('.csv'):
+                    hdr = list(pd.read_csv(path, nrows=0).columns)
+                else:
+                    hdr = list(pd.read_excel(path, nrows=0).columns)
+            except Exception:
+                hdr = []
+            score = score_file_columns(hdr)
+            # small boost for likely filenames
+            if 'superstore' in fn_l or 'orders' in fn_l or 'amazon' in fn_l:
+                score += 1
+            candidates.append((score, os.path.getsize(path), fn))
+    if not candidates:
+        return None
+    # pick highest score, then largest file
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    best = candidates[0][2]
+    return best
+
+# Parse optional CLI argument
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument('--file', type=str, help='Path to a single data file to use (in data/).')
+args, _ = parser.parse_known_args()
+if args.file:
+    # allow either absolute or data/ relative
+    given = args.file
+    if os.path.isabs(given):
+        ORDERS_FILE = os.path.basename(given)
+        PRODUCTS_FILE = ORDERS_FILE
+        CUSTOMERS_FILE = ORDERS_FILE
+        DATA_FOLDER = os.path.dirname(given)
+    else:
+        ORDERS_FILE = os.path.basename(given)
+        PRODUCTS_FILE = ORDERS_FILE
+        CUSTOMERS_FILE = ORDERS_FILE
+        DATA_FOLDER = os.path.dirname(os.path.join(os.getcwd(), given)) if os.path.dirname(given) else DATA_FOLDER
+else:
+    # Auto-detect a good file inside data folder if default filenames aren't present
+    # Only run when USE_YOUR_DATA is True
+    if USE_YOUR_DATA:
+        # If the default file doesn't exist, try to find a best candidate
+        default_path = os.path.join(DATA_FOLDER, ORDERS_FILE)
+        if not os.path.exists(default_path):
+            best = find_best_file_in_data(DATA_FOLDER)
+            if best:
+                print(f"   ⚠️ Auto-detected data file: {best}")
+                ORDERS_FILE = best
+                PRODUCTS_FILE = best
+                CUSTOMERS_FILE = best
 
 # ========== HELPER FUNCTION: Map column names automatically ==========
 def map_columns(df, mapping_dict):
@@ -144,10 +216,12 @@ if USE_YOUR_DATA:
             'order_id': ['Order.ID', 'Order ID', 'order_id', 'Order_ID'],
             'order_date': ['Order.Date', 'Order Date', 'Date', 'order_date', 'Order_Date'],
             'customer_id': ['Customer.ID', 'Customer ID', 'Customer.', 'customer_id', 'Customer_ID'],
-            'product_id': ['Product.ID', 'Product ID', 'product_id', 'Product_ID'],
-            'quantity': ['Quantity', 'quantity'],
-            'order_value': ['Sales', 'sales', 'Order Value', 'order_value'],
-            'discount_pct': ['Discount', 'discount'],
+            'product_id': ['Product.ID', 'Product ID', 'product_id', 'Product_ID', 'product_id', 'productid'],
+            # Amazon-style files sometimes use 'qty', 'units', 'quantity_ordered', etc.
+            'quantity': ['Quantity', 'quantity', 'Qty', 'qty', 'quantity_ordered', 'QuantityOrdered', 'units', 'Units'],
+            'order_value': ['Sales', 'sales', 'Order Value', 'order_value', 'actual_price', 'discounted_price', 'price'],
+            # Many datasets use different names for discount/discounted price
+            'discount_pct': ['Discount', 'discount', 'discount_percentage', 'discounted_price'],
             'ship_date': ['Ship.Date', 'Ship Date', 'ship_date'],
         }
         
@@ -171,7 +245,108 @@ if USE_YOUR_DATA:
         customers = load_data_file(customers_path, date_columns=["signup_date"], sheet_name=CUSTOMERS_SHEET, column_mapping=customers_column_mapping)
         
         print(f"✓ Loaded {len(orders)} orders, {len(products)} products, {len(customers)} customers")
-        
+
+        # If this file looks like an Amazon-style product+reviews export (no orders), synthesize orders/customers
+        # so the pipeline can run without manual edits. Detection: missing 'order_date' or 'order_id' but contains
+        # review/user/product columns like 'user_id', 'review_id', or 'product_name'.
+        if ("order_date" not in orders.columns or "order_id" not in orders.columns) and (
+            any(c in orders.columns for c in ["user_id", "review_id", "product_name", "actual_price", "discounted_price"]) 
+        ):
+            print("   ⚠️ Detected Amazon-style product/review export — synthesizing orders & customers...")
+            # Use REFERENCE_DATE as base for synthetic dates
+            reference_date = REFERENCE_DATE
+            # Build products dataframe from available product columns
+            prod_cols = []
+            for c in ["product_id", "product_name", "category", "actual_price", "discounted_price", "rating", "rating_count"]:
+                if c in orders.columns:
+                    prod_cols.append(c)
+            products = orders[prod_cols].copy() if prod_cols else orders[[c for c in orders.columns if 'product' in c.lower()]].copy()
+            if "product_id" not in products.columns:
+                products["product_id"] = [f"P_AMZ_{i}" for i in range(len(products))]
+            products = products.drop_duplicates(subset=["product_id"]).reset_index(drop=True)
+
+            # Create customers from user_id / user_name
+            if "user_id" in orders.columns:
+                customers = orders[[c for c in ["user_id", "user_name"] if c in orders.columns]].copy()
+                customers = customers.rename(columns={"user_id": "customer_id", "user_name": "user_name"})
+                customers = customers.drop_duplicates(subset=["customer_id"]).reset_index(drop=True)
+            else:
+                # Fallback: create synthetic customers per unique product reviewer name or one customer per row
+                customers = pd.DataFrame({"customer_id": [f"C_AMZ_{i}" for i in range(len(orders))]})
+
+            # Synthesize signup_date for customers (randomized reproducibly)
+            np.random.seed(42)
+            customers["signup_date"] = pd.to_datetime(reference_date) - pd.to_timedelta(np.random.randint(30, 900, size=len(customers)), unit='D')
+            customers["lifetime_value"] = 0
+
+            # Create orders: treat each review row as a single order of quantity=1
+            orders_synth = orders.copy()
+            orders_synth = orders_synth.reset_index(drop=True)
+            orders_synth["order_id"] = [f"AMZ_O{100000+i}" for i in orders_synth.index]
+            # Map user->customer_id
+            if "user_id" in orders_synth.columns:
+                orders_synth = orders_synth.rename(columns={"user_id": "customer_id"})
+            else:
+                orders_synth["customer_id"] = [f"C_AMZ_{i}" for i in orders_synth.index]
+
+            # product_id should exist; if not create
+            if "product_id" not in orders_synth.columns:
+                orders_synth["product_id"] = orders_synth.get("product_name", orders_synth.index.astype(str)).apply(lambda x: f"P_AMZ_{abs(hash(x))%100000}")
+
+            # Price handling: prefer discounted_price then actual_price
+            if "discounted_price" in orders_synth.columns:
+                orders_synth["price_after_discount"] = pd.to_numeric(orders_synth["discounted_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+            elif "actual_price" in orders_synth.columns:
+                orders_synth["price_after_discount"] = pd.to_numeric(orders_synth["actual_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+            else:
+                orders_synth["price_after_discount"] = 0
+
+            if "actual_price" in orders_synth.columns:
+                orders_synth["base_price"] = pd.to_numeric(orders_synth["actual_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+            else:
+                orders_synth["base_price"] = orders_synth["price_after_discount"].fillna(0)
+
+            # compute discount_pct if possible
+            orders_synth["discount_pct"] = 0
+            mask = orders_synth["base_price"].replace(0, np.nan).notnull() & orders_synth["price_after_discount"].notnull()
+            orders_synth.loc[mask, "discount_pct"] = ((orders_synth.loc[mask, "base_price"] - orders_synth.loc[mask, "price_after_discount"]) / orders_synth.loc[mask, "base_price"]) * 100
+
+            orders_synth["quantity"] = 1
+            # Generate synthetic order dates within last 2 years
+            orders_synth["order_date"] = pd.to_datetime(reference_date) - pd.to_timedelta(np.random.randint(0, 730, size=len(orders_synth)), unit='D')
+
+            # Other required defaults
+            orders_synth["delivery_time_days"] = 3
+            orders_synth["delivery_delay"] = 0
+            orders_synth["payment_method"] = "card"
+            orders_synth["failed_payment_attempts"] = 0
+            orders_synth["is_returned"] = 0
+            # Use review rating if available as customer_rating
+            if "rating" in orders_synth.columns:
+                orders_synth["customer_rating"] = pd.to_numeric(orders_synth["rating"], errors='coerce').fillna(4)
+            else:
+                orders_synth["customer_rating"] = 4
+
+            # Keep only necessary columns for pipeline
+            keep_cols = [c for c in ["order_id","customer_id","product_id","order_date","quantity","discount_pct","price_after_discount","base_price","delivery_time_days","delivery_delay","payment_method","failed_payment_attempts","is_returned","customer_rating"] if c in orders_synth.columns]
+            orders = orders_synth[keep_cols].copy()
+            # Rebuild products from orders where possible
+            products = products.rename(columns={col: col for col in products.columns})
+            print(f"   ✓ Synthesized {len(orders)} orders and {len(customers)} customers from Amazon export")
+
+            # Ensure rating exists on orders (merge from products if available, otherwise default)
+            if "rating" not in orders.columns:
+                if "rating" in products.columns:
+                    orders = orders.merge(products[["product_id", "rating"]], on="product_id", how="left")
+                if "rating" not in orders.columns:
+                    orders["rating"] = 4.0
+                orders["rating"] = pd.to_numeric(orders["rating"], errors='coerce').fillna(4.0)
+            # Ensure category and base product info exist on orders (merge from products)
+            if "category" not in orders.columns and "category" in products.columns:
+                orders = orders.merge(products[["product_id", "category"]].drop_duplicates(), on="product_id", how="left")
+            if "base_price" not in orders.columns and "base_price" in products.columns:
+                orders = orders.merge(products[["product_id", "base_price"]].drop_duplicates(), on="product_id", how="left")
+
         # Data validation and cleaning
         print("   Validating and cleaning data...")
         
@@ -181,8 +356,32 @@ if USE_YOUR_DATA:
             print("   ⚠️  Added missing 'stock_quantity' column with default value 100")
         
         if "manufacturing_cost" not in products.columns:
-            products["manufacturing_cost"] = products["base_price"] * 0.5
+            # Ensure `base_price` is numeric (strip currency symbols if present) and fill missing values
+            if "base_price" in products.columns:
+                # Remove common currency symbols and non-numeric characters, then coerce
+                products["base_price"] = pd.to_numeric(
+                    products["base_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True),
+                    errors='coerce'
+                )
+                # Fill any remaining NaNs with median price
+                try:
+                    products["base_price"].fillna(products["base_price"].median(), inplace=True)
+                except Exception:
+                    products["base_price"].fillna(0, inplace=True)
+
+            products["manufacturing_cost"] = products.get("base_price", pd.Series(0)) * 0.5
             print("   ⚠️  Added missing 'manufacturing_cost' column (estimated as 50% of base_price)")
+
+        # Coerce numeric fields in orders as defensive step (some datasets use strings for numbers)
+        numeric_cols_orders = ["quantity", "discount_pct", "base_price", "price_after_discount", "order_value"]
+        for col in numeric_cols_orders:
+            if col in orders.columns:
+                orders[col] = pd.to_numeric(orders[col].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+        # Fill sensible defaults
+        if "quantity" in orders.columns:
+            orders["quantity"].fillna(1, inplace=True)
+        if "discount_pct" in orders.columns:
+            orders["discount_pct"].fillna(0, inplace=True)
         
         # Ensure basic product metadata exists
         if "rating" not in products.columns:
@@ -456,6 +655,26 @@ feature_importance_clf = pd.DataFrame({
 
 # ========== 5) PRODUCT RECOMMENDATION SYSTEM ==========
 print("\n[5/8] Building Product Recommendation System...")
+# Ensure products have a numeric `base_price` and `rating` for the recommender
+if "base_price" not in products.columns:
+    if "actual_price" in products.columns:
+        products["base_price"] = pd.to_numeric(products["actual_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+    elif "discounted_price" in products.columns:
+        products["base_price"] = pd.to_numeric(products["discounted_price"].astype(str).str.replace(r'[^0-9.\-]', '', regex=True), errors='coerce')
+    else:
+        # Try to infer from orders
+        if "base_price" in orders.columns:
+            inferred = orders.groupby("product_id")["base_price"].median().reset_index().rename(columns={"base_price":"base_price_inferred"})
+            products = products.merge(inferred, on="product_id", how="left")
+            products["base_price"] = products["base_price_inferred"]
+            products.drop(columns=["base_price_inferred"], inplace=True)
+        else:
+            products["base_price"] = 0
+
+products["base_price"] = pd.to_numeric(products["base_price"], errors='coerce').fillna(0)
+if "rating" not in products.columns:
+    products["rating"] = 4.0
+
 prod_feat = products.copy()
 prod_feat["price_log"] = np.log1p(prod_feat["base_price"])
 # Use sparse_output for newer scikit-learn versions (fallback to sparse for older versions)
@@ -463,8 +682,14 @@ try:
     ohe = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
 except TypeError:
     ohe = OneHotEncoder(sparse=False, handle_unknown="ignore")
+
+# Ensure numeric types for price and rating
+prod_feat["price_log"] = pd.to_numeric(prod_feat["price_log"], errors='coerce').fillna(0)
+prod_feat["rating"] = pd.to_numeric(prod_feat["rating"], errors='coerce').fillna(4.0)
+
 cat_enc = ohe.fit_transform(prod_feat[["category"]])
-prod_X = np.hstack([prod_feat[["price_log", "rating"]].values, cat_enc])
+cat_enc = np.asarray(cat_enc, dtype=float)
+prod_X = np.hstack([prod_feat[["price_log", "rating"]].values.astype(float), cat_enc])
 knn = NearestNeighbors(n_neighbors=6, metric="cosine").fit(prod_X)
 
 def recommend_similar(product_id, top_n=5):
@@ -896,3 +1121,4 @@ print("   2. Implement recommendations from business insights")
 print("   3. Monitor feature importance to track changing patterns")
 print("   4. Update models monthly with new data for better predictions")
 print("   5. A/B test suggested pricing and discount strategies")
+
