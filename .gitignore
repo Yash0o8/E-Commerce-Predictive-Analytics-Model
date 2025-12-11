@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+.venv312/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDEs
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data and outputs
+data/*.csv
+data/*.xlsx
+ecom_ml_output/
+models/
+run_output.log
+watcher_state.json
+
+# Python distribution/build
+build/
+dist/
+*.egg-info/
+
+# logs
+*.log
